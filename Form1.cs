@@ -78,7 +78,7 @@ namespace WebUIApp
             switch (msg.Type)
             {
                 case "runQuery":
-                    var result = RunQuery(mainDb, msg.Sql);
+                    var result = RunQuery(mainDb, msg.Sql, msg.Params);
                     await SendToJs("queryResult", result);
                     break;
 
@@ -99,7 +99,7 @@ namespace WebUIApp
             }
         }
 
-        private QueryResult RunQuery(string mainDb, string sql)
+        private QueryResult RunQuery(string mainDb, string sql, Dictionary<string, string> parameters = null)
         {
             var result = new QueryResult();
 
@@ -110,6 +110,22 @@ namespace WebUIApp
                     conn.Open();
                     using (var cmd = new SQLiteCommand(sql, conn))
                     {
+                        // Add parameters if provided
+                        if (parameters != null)
+                        {
+                            foreach (var kvp in parameters)
+                            {
+                                // Make sure parameter name starts with @
+                                string paramName = kvp.Key.StartsWith("@") ? kvp.Key : "@" + kvp.Key;
+
+                                // If value is null or empty, pass DBNull.Value
+                                object paramValue = string.IsNullOrEmpty(kvp.Value) ? DBNull.Value : (object)kvp.Value;
+
+                                cmd.Parameters.AddWithValue(paramName, paramValue);
+                            }
+                        }
+
+
                         var firstWord = sql.TrimStart().Split(' ')[0].ToUpperInvariant();
 
                         if (firstWord == "SELECT" || firstWord == "PRAGMA")
@@ -118,9 +134,7 @@ namespace WebUIApp
                             {
                                 // Columns
                                 for (int i = 0; i < reader.FieldCount; i++)
-                                {
                                     result.Columns.Add(new ColumnInfo { ColumnName = reader.GetName(i) });
-                                }
 
                                 // Rows
                                 while (reader.Read())
@@ -145,8 +159,8 @@ namespace WebUIApp
             }
             catch (Exception ex)
             {
-                result.Message = ex.Message;
                 result.IsError = true;
+                result.Message = ex.Message;
             }
 
             return result;

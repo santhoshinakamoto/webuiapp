@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8" />
-    <title>SQLite Editor</title>
+    <title>SQLite Editor with Parameters</title>
     <style>
         body {
             font-family: Segoe UI, Arial, sans-serif;
@@ -43,10 +43,32 @@
                     background: #005a9e;
                 }
 
+        /* Layout: editor + parameter panel */
+        #mainPanel {
+            display: flex;
+        }
+
         #editor {
+            flex: 1;
             height: 220px;
             border-bottom: 1px solid #ccc;
         }
+
+        #paramPanel {
+            width: 250px;
+            padding: 10px;
+            background: #f9f9f9;
+            border-left: 1px solid #ccc;
+        }
+
+            #paramPanel h4 {
+                margin-top: 0;
+            }
+
+            #paramPanel input {
+                width: 100%;
+                margin-bottom: 6px;
+            }
 
         #methods {
             padding: 10px;
@@ -123,8 +145,7 @@
     </style>
 </head>
 <body>
-
-    <header>SQLite Desktop Editor</header>
+    <header>SQLite Desktop Editor with Parameters</header>
 
     <div id="toolbar">
         <button id="runBtn" onclick="runQuery()">▶ Run</button>
@@ -132,7 +153,14 @@
         <button onclick="listMethods()">📑 List Methods</button>
     </div>
 
-    <div id="editor"></div>
+    <div id="mainPanel">
+        <div id="editor"></div>
+        <div id="paramPanel">
+            <h4>Parameters</h4>
+            <div id="paramFields">No parameters detected</div>
+        </div>
+    </div>
+
     <div id="methods"></div>
     <div id="results"><i>No query executed yet</i></div>
     <div id="statusBar">Ready</div>
@@ -143,39 +171,74 @@
         require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' } });
         require(['vs/editor/editor.main'], function () {
             window.editor = monaco.editor.create(document.getElementById('editor'), {
-                value: "SELECT name FROM sqlite_master;",
+                value: "SELECT * FROM Students WHERE Age > @minAge AND Grade = @grade;",
                 language: "sql",
-                theme: "vs-light", // try "vs-dark" too
+                theme: "vs-light",
                 automaticLayout: true,
                 minimap: { enabled: false }
             });
+
+            editor.onDidChangeModelContent(updateParamsPanel);
+            updateParamsPanel(); // initial
         });
+
+        // --- Parameters Panel ---
+        function updateParamsPanel() {
+            let sql = editor.getValue();
+            let matches = sql.match(/@\w+/g);
+            let paramDiv = document.getElementById("paramFields");
+            paramDiv.innerHTML = "";
+
+            if (!matches) {
+                paramDiv.innerHTML = "No parameters detected";
+                return;
+            }
+
+            let uniqueParams = [...new Set(matches)];
+            uniqueParams.forEach(p => {
+                let container = document.createElement("div");
+                container.style.marginBottom = "6px";
+
+                let label = document.createElement("label");
+                label.textContent = p;
+                label.style.display = "block";
+                label.style.fontWeight = "bold";
+
+                let input = document.createElement("input");
+                input.type = "text";
+                input.dataset.param = p;
+
+                container.appendChild(label);
+                container.appendChild(input);
+                paramDiv.appendChild(container);
+            });
+        }
+
+        function getParamValues() {
+            let inputs = document.querySelectorAll("#paramFields input");
+            let values = {};
+            inputs.forEach(inp => {
+                values[inp.dataset.param] = inp.value;
+            });
+            return values;
+        }
 
         // --- Query execution ---
         let queryStartTime = null;
 
         function runQuery() {
             let selection = editor.getModel().getValueInRange(editor.getSelection());
-            let sql;
-
-            if (selection && selection.trim() !== "") {
-                // Use only the selected SQL
-                sql = selection;
-                setStatus("Executing selected query...");
-            } else {
-                // Use the entire editor content
-                sql = editor.getValue();
-                setStatus("Executing full script...");
-            }
+            let sql = (selection && selection.trim() !== "") ? selection : editor.getValue();
+            let params = getParamValues();
 
             queryStartTime = performance.now();
             startProcessing();
             showExecuting();
 
-            // Send SQL to C# backend
             window.chrome.webview.postMessage({
                 Type: "runQuery",
-                Sql: sql
+                Sql: sql,
+                Params: params
             });
         }
 
@@ -201,14 +264,13 @@
             let div = document.getElementById("results");
             let elapsed = (performance.now() - queryStartTime).toFixed(1);
 
-            if (data.Message.startsWith("Error")) {
+            if (data.IsError) {
                 div.innerHTML = `<span style="color:red;">${data.Message}</span>`;
                 setStatus(`Error after ${elapsed} ms`);
                 return;
             }
 
             if (data.Rows && data.Rows.length > 0) {
-                // Build table for SELECT results
                 let table = "<table><tr>";
                 data.Columns.forEach(c => { table += "<th>" + c.ColumnName + "</th>"; });
                 table += "</tr>";
@@ -221,7 +283,6 @@
                 div.innerHTML = table;
                 setStatus(`Completed in ${elapsed} ms, ${data.Rows.length} row(s) returned`);
             } else {
-                // Non-SELECT queries (INSERT/UPDATE/DELETE/DDL)
                 div.innerHTML = `<i>${data.Message}</i>`;
                 setStatus(`Completed in ${elapsed} ms, ${data.RowsAffected} row(s) affected`);
             }
@@ -229,7 +290,7 @@
 
         // --- Methods ---
         function saveMethod() {
-            let sql = window.editor.getValue();
+            let sql = editor.getValue();
             let name = prompt("Enter method name:");
             if (name) send({ Type: "saveMethod", Name: name, Sql: sql });
         }
@@ -266,7 +327,7 @@
             if (msg.Type === "askParams") askParams(msg.Data);
         });
 
-        // --- Parameters ---
+        // --- Parameters for methods ---
         function askParams(data) {
             let values = {};
             data.Params.forEach(p => {

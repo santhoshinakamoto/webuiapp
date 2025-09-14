@@ -11,5 +11,7 @@ namespace WebUIApp
         public string Type { get; set; }   // runQuery, saveMethod, listMethods, runMethod
         public string Sql { get; set; }    // SQL text
         public string Name { get; set; }   // Method name
+
+        public Dictionary<string, string> Params { get; set; } = new Dictionary<string, string>();
     }
 }
