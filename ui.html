@@ -1,0 +1,285 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>SQLite Editor</title>
+    <style>
+        body {
+            font-family: Segoe UI, Arial, sans-serif;
+            margin: 0;
+            background: #f3f3f3;
+        }
+
+        header {
+            background: #0078d7;
+            color: white;
+            padding: 10px;
+            font-size: 18px;
+        }
+
+        #toolbar {
+            background: #eaeaea;
+            padding: 8px;
+            border-bottom: 1px solid #ccc;
+        }
+
+            #toolbar button {
+                background: #0078d7;
+                color: white;
+                border: none;
+                padding: 6px 14px;
+                margin-right: 6px;
+                border-radius: 3px;
+                cursor: pointer;
+                font-size: 14px;
+            }
+
+                #toolbar button:disabled {
+                    opacity: 0.6;
+                    cursor: wait;
+                }
+
+                #toolbar button:hover:enabled {
+                    background: #005a9e;
+                }
+
+        #editor {
+            height: 220px;
+            border-bottom: 1px solid #ccc;
+        }
+
+        #methods {
+            padding: 10px;
+        }
+
+        #results {
+            background: white;
+            margin: 10px;
+            padding: 10px;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+            max-height: 300px;
+            overflow: auto;
+        }
+
+            #results table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 13px;
+            }
+
+            #results th {
+                background: #f3f2f1;
+                border: 1px solid #d0d0d0;
+                padding: 6px;
+                text-align: left;
+            }
+
+            #results td {
+                border: 1px solid #e0e0e0;
+                padding: 6px;
+            }
+
+            #results tr:nth-child(even) td {
+                background: #fafafa;
+            }
+
+            #results tr:hover td {
+                background: #eef6fb;
+            }
+
+        /* Status bar */
+        #statusBar {
+            background: #f3f2f1;
+            border-top: 1px solid #ccc;
+            padding: 6px 10px;
+            font-size: 12px;
+            color: #333;
+            font-family: Consolas, monospace;
+        }
+
+        /* Spinner */
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .spinner {
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid white;
+            border-radius: 50%;
+            width: 14px;
+            height: 14px;
+            display: inline-block;
+            animation: spin 1s linear infinite;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+
+    <header>SQLite Desktop Editor</header>
+
+    <div id="toolbar">
+        <button id="runBtn" onclick="runQuery()">▶ Run</button>
+        <button onclick="saveMethod()">💾 Save as Method</button>
+        <button onclick="listMethods()">📑 List Methods</button>
+    </div>
+
+    <div id="editor"></div>
+    <div id="methods"></div>
+    <div id="results"><i>No query executed yet</i></div>
+    <div id="statusBar">Ready</div>
+
+    <!-- Monaco Editor -->
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.js"></script>
+    <script>
+        require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' } });
+        require(['vs/editor/editor.main'], function () {
+            window.editor = monaco.editor.create(document.getElementById('editor'), {
+                value: "SELECT name FROM sqlite_master;",
+                language: "sql",
+                theme: "vs-light", // try "vs-dark" too
+                automaticLayout: true,
+                minimap: { enabled: false }
+            });
+        });
+
+        // --- Query execution ---
+        let queryStartTime = null;
+
+        function runQuery() {
+            let selection = editor.getModel().getValueInRange(editor.getSelection());
+            let sql;
+
+            if (selection && selection.trim() !== "") {
+                // Use only the selected SQL
+                sql = selection;
+                setStatus("Executing selected query...");
+            } else {
+                // Use the entire editor content
+                sql = editor.getValue();
+                setStatus("Executing full script...");
+            }
+
+            queryStartTime = performance.now();
+            startProcessing();
+            showExecuting();
+
+            // Send SQL to C# backend
+            window.chrome.webview.postMessage({
+                Type: "runQuery",
+                Sql: sql
+            });
+        }
+
+        function startProcessing() {
+            let btn = document.getElementById("runBtn");
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Running...';
+        }
+
+        function stopProcessing() {
+            let btn = document.getElementById("runBtn");
+            btn.disabled = false;
+            btn.innerHTML = '▶ Run';
+        }
+
+        function showExecuting() {
+            let div = document.getElementById("results");
+            div.innerHTML = "<i>Executing query...</i>";
+        }
+
+        function showResults(data) {
+            stopProcessing();
+            let div = document.getElementById("results");
+            let elapsed = (performance.now() - queryStartTime).toFixed(1);
+
+            if (data.Message.startsWith("Error")) {
+                div.innerHTML = `<span style="color:red;">${data.Message}</span>`;
+                setStatus(`Error after ${elapsed} ms`);
+                return;
+            }
+
+            if (data.Rows && data.Rows.length > 0) {
+                // Build table for SELECT results
+                let table = "<table><tr>";
+                data.Columns.forEach(c => { table += "<th>" + c.ColumnName + "</th>"; });
+                table += "</tr>";
+                data.Rows.forEach(r => {
+                    table += "<tr>";
+                    r.forEach(val => table += "<td>" + (val ?? "") + "</td>");
+                    table += "</tr>";
+                });
+                table += "</table>";
+                div.innerHTML = table;
+                setStatus(`Completed in ${elapsed} ms, ${data.Rows.length} row(s) returned`);
+            } else {
+                // Non-SELECT queries (INSERT/UPDATE/DELETE/DDL)
+                div.innerHTML = `<i>${data.Message}</i>`;
+                setStatus(`Completed in ${elapsed} ms, ${data.RowsAffected} row(s) affected`);
+            }
+        }
+
+        // --- Methods ---
+        function saveMethod() {
+            let sql = window.editor.getValue();
+            let name = prompt("Enter method name:");
+            if (name) send({ Type: "saveMethod", Name: name, Sql: sql });
+        }
+        function listMethods() {
+            send({ Type: "listMethods" });
+        }
+        function runMethod(name) {
+            queryStartTime = performance.now();
+            startProcessing();
+            showExecuting();
+            setStatus(`Executing method "${name}"...`);
+            send({ Type: "runMethod", Name: name });
+        }
+        function showMethods(methods) {
+            let div = document.getElementById("methods");
+            div.innerHTML = "<h3 style='margin:10px;'>Saved Methods</h3>";
+            methods.forEach(m => {
+                let btn = document.createElement("button");
+                btn.style.cssText = "margin:4px; background:#5c2d91; color:white; border:none; padding:6px 12px; border-radius:3px; cursor:pointer;";
+                btn.textContent = m;
+                btn.onclick = () => runMethod(m);
+                div.appendChild(btn);
+            });
+        }
+
+        // --- Messaging bridge ---
+        function send(msg) {
+            window.chrome.webview.postMessage(msg);
+        }
+        window.chrome.webview.addEventListener('message', event => {
+            let msg = event.data;
+            if (msg.Type === "queryResult") showResults(msg.Data);
+            if (msg.Type === "methodsList") showMethods(msg.Data);
+            if (msg.Type === "askParams") askParams(msg.Data);
+        });
+
+        // --- Parameters ---
+        function askParams(data) {
+            let values = {};
+            data.Params.forEach(p => {
+                let val = prompt("Enter value for " + p);
+                values[p] = val;
+            });
+            send({ Type: "runMethod", Name: data.Name, Params: values });
+        }
+
+        // --- Status Bar ---
+        function setStatus(text) {
+            document.getElementById("statusBar").textContent = text;
+        }
+    </script>
+</body>
+</html>
