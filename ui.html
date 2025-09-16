@@ -17,10 +17,14 @@
             font-size: 18px;
         }
 
+        /* toolbar */
         #toolbar {
             background: #eaeaea;
             padding: 8px;
             border-bottom: 1px solid #ccc;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
             #toolbar button {
@@ -28,7 +32,6 @@
                 color: white;
                 border: none;
                 padding: 6px 14px;
-                margin-right: 6px;
                 border-radius: 3px;
                 cursor: pointer;
                 font-size: 14px;
@@ -43,7 +46,93 @@
                     background: #005a9e;
                 }
 
-        /* Layout: editor + parameter panel */
+        /* methods dropdown button (caret) */
+        .methods-dropdown {
+            position: relative;
+            display: inline-block;
+        }
+
+        .methods-btn {
+            background: #0078d7;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .caret {
+            border-top: 6px solid white;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            width: 0;
+            height: 0;
+            display: inline-block;
+        }
+
+        /* dropdown menu */
+        .methods-menu {
+            position: absolute;
+            top: calc(100% + 6px);
+            right: 0;
+            min-width: 260px;
+            background: #fff;
+            border: 1px solid #ddd;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.12);
+            border-radius: 4px;
+            z-index: 9999;
+            max-height: 320px;
+            overflow: auto;
+        }
+
+        .methods-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 10px;
+            border-bottom: 1px solid #f0f0f0;
+            cursor: default;
+        }
+
+            .methods-item:hover {
+                background: #f6f8fb;
+            }
+
+        .methods-name {
+            color: #333;
+            cursor: pointer;
+            flex: 1;
+            margin-right: 8px;
+        }
+
+        .methods-actions {
+            white-space: nowrap;
+        }
+
+        .btn-delete {
+            background: #e53e3e;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+            .btn-delete:hover {
+                background: #c92b2b;
+            }
+
+        .menu-empty {
+            padding: 10px;
+            color: #666;
+        }
+
+        /* main layout */
         #mainPanel {
             display: flex;
         }
@@ -69,10 +158,6 @@
                 width: 100%;
                 margin-bottom: 6px;
             }
-
-        #methods {
-            padding: 10px;
-        }
 
         #results {
             background: white;
@@ -110,7 +195,6 @@
                 background: #eef6fb;
             }
 
-        /* Status bar */
         #statusBar {
             background: #f3f2f1;
             border-top: 1px solid #ccc;
@@ -120,7 +204,6 @@
             font-family: Consolas, monospace;
         }
 
-        /* Spinner */
         @keyframes spin {
             0% {
                 transform: rotate(0deg);
@@ -150,7 +233,17 @@
     <div id="toolbar">
         <button id="runBtn" onclick="runQuery()">▶ Run</button>
         <button onclick="saveMethod()">💾 Save as Method</button>
-        <button onclick="listMethods()">📑 List Methods</button>
+
+        <!-- Methods dropdown (caret-style). Click to load methods from backend -->
+        <div class="methods-dropdown" id="methodsDropdown">
+            <button class="methods-btn" id="methodsBtn" onclick="openMethodsMenu(event)">
+                Methods <span class="caret"></span>
+            </button>
+            <div id="methodsMenu" class="methods-menu" style="display:none">
+                <!-- populated dynamically -->
+                <div class="menu-empty">Loading...</div>
+            </div>
+        </div>
     </div>
 
     <div id="mainPanel">
@@ -161,7 +254,6 @@
         </div>
     </div>
 
-    <div id="methods"></div>
     <div id="results"><i>No query executed yet</i></div>
     <div id="statusBar">Ready</div>
 
@@ -182,7 +274,7 @@
             updateParamsPanel(); // initial
         });
 
-        // --- Parameters Panel ---
+        // ---------- Parameters panel (kept intact) ----------
         function updateParamsPanel() {
             let sql = editor.getValue();
             let matches = sql.match(/@\w+/g);
@@ -223,9 +315,8 @@
             return values;
         }
 
-        // --- Query execution ---
+        // ---------- Query execution UI ----------
         let queryStartTime = null;
-
         function runQuery() {
             let selection = editor.getModel().getValueInRange(editor.getSelection());
             let sql = (selection && selection.trim() !== "") ? selection : editor.getValue();
@@ -241,19 +332,16 @@
                 Params: params
             });
         }
-
         function startProcessing() {
             let btn = document.getElementById("runBtn");
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner"></span> Running...';
         }
-
         function stopProcessing() {
             let btn = document.getElementById("runBtn");
             btn.disabled = false;
             btn.innerHTML = '▶ Run';
         }
-
         function showExecuting() {
             let div = document.getElementById("results");
             div.innerHTML = "<i>Executing query...</i>";
@@ -288,59 +376,137 @@
             }
         }
 
-        // --- Methods ---
-        function saveMethod() {
-            let sql = editor.getValue();
-            let name = prompt("Enter method name:");
-            if (name) send({ Type: "saveMethod", Name: name, Sql: sql });
+        // ---------- Methods dropdown / menu logic ----------
+        const methodsMenu = document.getElementById ? null : null; // no-op to keep linter happy
+
+        function openMethodsMenu(ev) {
+            ev.stopPropagation();
+            const menu = document.getElementById('methodsMenu');
+            // toggle: if already open -> close
+            if (menu.style.display === 'block') {
+                menu.style.display = 'none';
+                return;
+            }
+            // show loading immediately
+            menu.innerHTML = '<div class="menu-empty">Loading...</div>';
+            menu.style.display = 'block';
+            // request backend to list methods
+            window.chrome.webview.postMessage({ Type: 'listMethods' });
         }
-        function listMethods() {
-            send({ Type: "listMethods" });
-        }
-        function runMethod(name) {
-            queryStartTime = performance.now();
-            startProcessing();
-            showExecuting();
-            setStatus(`Executing method "${name}"...`);
-            send({ Type: "runMethod", Name: name });
-        }
-        function showMethods(methods) {
-            let div = document.getElementById("methods");
-            div.innerHTML = "<h3 style='margin:10px;'>Saved Methods</h3>";
-            methods.forEach(m => {
-                let btn = document.createElement("button");
-                btn.style.cssText = "margin:4px; background:#5c2d91; color:white; border:none; padding:6px 12px; border-radius:3px; cursor:pointer;";
-                btn.textContent = m;
-                btn.onclick = () => runMethod(m);
-                div.appendChild(btn);
+
+        // Populate menu when backend returns list
+        function populateMethodsMenu(list) {
+            const menu = document.getElementById('methodsMenu');
+            menu.innerHTML = '';
+            if (!list || list.length === 0) {
+                menu.innerHTML = '<div class="menu-empty">No saved methods</div>';
+                return;
+            }
+            list.forEach(name => {
+                const item = document.createElement('div');
+                item.className = 'methods-item';
+
+                const title = document.createElement('div');
+                title.className = 'methods-name';
+                title.textContent = name;
+                title.title = 'Click to run';
+                title.onclick = () => { runMethod(name); menu.style.display = 'none'; };
+
+                const actions = document.createElement('div');
+                actions.className = 'methods-actions';
+
+                const del = document.createElement('button');
+                del.className = 'btn-delete';
+                del.textContent = 'Delete';
+                del.onclick = (e) => {
+                    e.stopPropagation();
+                    if (confirm('Delete method "' + name + '" ?')) {
+                        window.chrome.webview.postMessage({ Type: 'deleteMethod', Name: name });
+                        // show immediate feedback
+                        menu.innerHTML = '<div class="menu-empty">Deleting...</div>';
+                    }
+                };
+
+                actions.appendChild(del);
+                item.appendChild(title);
+                item.appendChild(actions);
+                menu.appendChild(item);
             });
         }
 
-        // --- Messaging bridge ---
-        function send(msg) {
-            window.chrome.webview.postMessage(msg);
+        // close menu when clicking outside
+        document.addEventListener('click', function (e) {
+            const menu = document.getElementById('methodsMenu');
+            const btn = document.getElementById('methodsBtn');
+            if (!menu) return;
+            if (menu.style.display === 'block') {
+                // if click inside the dropdown or button, ignore
+                if (e.target.closest('#methodsMenu') || e.target.closest('#methodsBtn')) return;
+                menu.style.display = 'none';
+            }
+        });
+
+        // ---------- Methods helpers ----------
+        function saveMethod() {
+            let sql = editor.getValue();
+            let name = prompt("Enter method name:");
+            if (name) window.chrome.webview.postMessage({ Type: "saveMethod", Name: name, Sql: sql });
         }
+
+        function runMethod(name) {
+            if (!confirm(`Do you want to replace the query editor with method "${name}"?`)) {
+                return;
+            }
+            // Ask backend for the SQL of this method
+            window.chrome.webview.postMessage({ Type: "getMethodSql", Name: name });
+        }
+
         window.chrome.webview.addEventListener('message', event => {
             let msg = event.data;
+            if (!msg || !msg.Type) return;
+
             if (msg.Type === "queryResult") showResults(msg.Data);
-            if (msg.Type === "methodsList") showMethods(msg.Data);
+            if (msg.Type === "methodsList") populateMethodsMenu(msg.Data);
+            if (msg.Type === "askParams") askParams(msg.Data);
+            if (msg.Type === "methodSql") {
+                // Backend returned SQL text → replace editor content
+                if (msg.Data) {
+                    editor.setValue(msg.Data);
+                    updateParamsPanel(); // refresh param form
+                }
+            }
+        });
+
+        function listMethods() {
+            // refresh the menu contents (open menu if closed)
+            const menu = document.getElementById('methodsMenu');
+            menu.style.display = 'block';
+            menu.innerHTML = '<div class="menu-empty">Loading...</div>';
+            window.chrome.webview.postMessage({ Type: 'listMethods' });
+        }
+
+        // ---------- Messaging bridge ----------
+        window.chrome.webview.addEventListener('message', event => {
+            let msg = event.data;
+            if (!msg || !msg.Type) return;
+
+            if (msg.Type === "queryResult") showResults(msg.Data);
+            if (msg.Type === "methodsList") populateMethodsMenu(msg.Data);
             if (msg.Type === "askParams") askParams(msg.Data);
         });
 
-        // --- Parameters for methods ---
+        // ---------- askParams (fallback small prompt version) ----------
         function askParams(data) {
             let values = {};
             data.Params.forEach(p => {
                 let val = prompt("Enter value for " + p);
                 values[p] = val;
             });
-            send({ Type: "runMethod", Name: data.Name, Params: values });
+            window.chrome.webview.postMessage({ Type: "runMethod", Name: data.Name, Params: values });
         }
 
-        // --- Status Bar ---
-        function setStatus(text) {
-            document.getElementById("statusBar").textContent = text;
-        }
+        // ---------- Status Bar ----------
+        function setStatus(text) { document.getElementById("statusBar").textContent = text; }
     </script>
 </body>
 </html>

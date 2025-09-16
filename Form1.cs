@@ -3,13 +3,8 @@ using Microsoft.Web.WebView2.WinForms;
 using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
 using System.Data.SQLite;
-using System.Drawing;
 using System.IO;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -18,9 +13,7 @@ namespace WebUIApp
     public partial class Form1 : Form
     {
         private WebView2 webView;
-
-        private string mainDb = "mydb.db";
-        private string methodsDb = "methods.db";
+        private string appDb = "app.db";
 
         public Form1()
         {
@@ -32,111 +25,77 @@ namespace WebUIApp
         {
             this.Width = 1000;
             this.Height = 700;
-
-            webView = new WebView2
-            {
-                Dock = DockStyle.Fill
-            };
+            webView = new WebView2 { Dock = DockStyle.Fill };
             this.Controls.Add(webView);
-
             await webView.EnsureCoreWebView2Async();
             webView.CoreWebView2.WebMessageReceived += WebView_WebMessageReceived;
-
-            // Load UI HTML
             string html = File.ReadAllText("ui.html");
             webView.NavigateToString(html);
-
             InitDatabases();
         }
 
         private void InitDatabases()
         {
-            if (!File.Exists(mainDb))
+            if (!File.Exists(appDb)) SQLiteConnection.CreateFile(appDb);
+            using (var conn = new SQLiteConnection($"Data Source={appDb}"))
             {
-                SQLiteConnection.CreateFile(mainDb);
-            }
-            if (!File.Exists(methodsDb))
-            {
-                SQLiteConnection.CreateFile(methodsDb);
-                using (var conn = new SQLiteConnection($"Data Source={methodsDb}"))
-                {
-                    conn.Open();
-                    string sql = "CREATE TABLE IF NOT EXISTS Methods (Name TEXT PRIMARY KEY, Sql TEXT)";
-                    using (var cmd = new SQLiteCommand(sql, conn))
-                    {
-                        cmd.ExecuteNonQuery();
-                    }
-                }
+                conn.Open();
+                new SQLiteCommand("CREATE TABLE IF NOT EXISTS Methods (Name TEXT PRIMARY KEY, Sql TEXT)", conn).ExecuteNonQuery();
+                new SQLiteCommand(@"CREATE TABLE IF NOT EXISTS Students (Id INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT, Age INTEGER, Grade TEXT)", conn).ExecuteNonQuery();
+                new SQLiteCommand(@"CREATE TABLE IF NOT EXISTS Schools (Id INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT, Location TEXT)", conn).ExecuteNonQuery();
             }
         }
 
         private async void WebView_WebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
         {
-            string json = e.WebMessageAsJson;
-            var msg = JsonConvert.DeserializeObject<AppMessage>(json);
-
+            var msg = JsonConvert.DeserializeObject<AppMessage>(e.WebMessageAsJson);
             switch (msg.Type)
             {
                 case "runQuery":
-                    var result = RunQuery(mainDb, msg.Sql, msg.Params);
-                    await SendToJs("queryResult", result);
+                    await SendToJs("queryResult", RunQuery(appDb, msg.Sql, msg.Params));
                     break;
-
                 case "saveMethod":
-                    SaveMethod(msg.Name, msg.Sql);
+                    await SaveMethod(msg.Name, msg.Sql);
                     break;
-
                 case "listMethods":
-                    var methods = ListMethods();
-                    await SendToJs("methodsList", methods);
+                    await SendToJs("methodsList", ListMethods());
                     break;
-
-                case "runMethod":
-                    string sql = GetMethodSql(msg.Name);
-                    var methodResult = RunQuery(mainDb, sql);
-                    await SendToJs("queryResult", methodResult);
+                case "getMethodSql":
+                    await SendToJs("methodSql", GetMethodSql(msg.Name));
+                    break;
+                case "deleteMethod":
+                    DeleteMethod(msg.Name);
+                    await SendToJs("methodsList", ListMethods());
                     break;
             }
         }
 
-        private QueryResult RunQuery(string mainDb, string sql, Dictionary<string, string> parameters = null)
+        private QueryResult RunQuery(string db, string sql, Dictionary<string, string> parameters = null)
         {
             var result = new QueryResult();
-
             try
             {
-                using (var conn = new SQLiteConnection("Data Source=" + mainDb))
+                using (var conn = new SQLiteConnection("Data Source=" + db))
                 {
                     conn.Open();
                     using (var cmd = new SQLiteCommand(sql, conn))
                     {
-                        // Add parameters if provided
                         if (parameters != null)
                         {
                             foreach (var kvp in parameters)
                             {
-                                // Make sure parameter name starts with @
                                 string paramName = kvp.Key.StartsWith("@") ? kvp.Key : "@" + kvp.Key;
-
-                                // If value is null or empty, pass DBNull.Value
                                 object paramValue = string.IsNullOrEmpty(kvp.Value) ? DBNull.Value : (object)kvp.Value;
-
                                 cmd.Parameters.AddWithValue(paramName, paramValue);
                             }
                         }
-
-
                         var firstWord = sql.TrimStart().Split(' ')[0].ToUpperInvariant();
-
                         if (firstWord == "SELECT" || firstWord == "PRAGMA")
                         {
                             using (var reader = cmd.ExecuteReader())
                             {
-                                // Columns
                                 for (int i = 0; i < reader.FieldCount; i++)
                                     result.Columns.Add(new ColumnInfo { ColumnName = reader.GetName(i) });
-
-                                // Rows
                                 while (reader.Read())
                                 {
                                     var row = new List<object>();
@@ -144,7 +103,6 @@ namespace WebUIApp
                                         row.Add(reader.IsDBNull(i) ? null : reader.GetValue(i));
                                     result.Rows.Add(row);
                                 }
-
                                 result.Message = $"{result.Rows.Count} row(s) returned";
                             }
                         }
@@ -157,26 +115,46 @@ namespace WebUIApp
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                result.IsError = true;
-                result.Message = ex.Message;
-            }
-
+            catch (Exception ex) { result.IsError = true; result.Message = ex.Message; }
             return result;
         }
 
-
-        private void SaveMethod(string name, string sql)
+        private async Task SaveMethod(string name, string sql)
         {
-            using (var conn = new SQLiteConnection($"Data Source={methodsDb}"))
+            using (var conn = new SQLiteConnection($"Data Source={appDb}"))
             {
                 conn.Open();
-                string upsert = "INSERT OR REPLACE INTO Methods (Name, Sql) VALUES (@name, @sql)";
-                using (var cmd = new SQLiteCommand(upsert, conn))
+                string check = "SELECT COUNT(*) FROM Methods WHERE Name=@name";
+                using (var cmd = new SQLiteCommand(check, conn))
+                {
+                    cmd.Parameters.AddWithValue("@name", name);
+                    long count = (long)cmd.ExecuteScalar();
+                    if (count > 0)
+                    {
+                        await SendToJs("error", $"Method \"{name}\" already exists. Please choose another name.");
+                        return;
+                    }
+                }
+                string insert = "INSERT INTO Methods (Name, Sql) VALUES (@name, @sql)";
+                using (var cmd = new SQLiteCommand(insert, conn))
                 {
                     cmd.Parameters.AddWithValue("@name", name);
                     cmd.Parameters.AddWithValue("@sql", sql);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            await SendToJs("methodsList", ListMethods());
+        }
+
+        private void DeleteMethod(string name)
+        {
+            using (var conn = new SQLiteConnection($"Data Source={appDb}"))
+            {
+                conn.Open();
+                string sql = "DELETE FROM Methods WHERE Name=@name";
+                using (var cmd = new SQLiteCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@name", name);
                     cmd.ExecuteNonQuery();
                 }
             }
@@ -184,16 +162,15 @@ namespace WebUIApp
 
         private string[] ListMethods()
         {
-            using (var conn = new SQLiteConnection($"Data Source={methodsDb}"))
+            using (var conn = new SQLiteConnection($"Data Source={appDb}"))
             {
                 conn.Open();
-                string sql = "SELECT Name FROM Methods";
+                string sql = "SELECT Name FROM Methods ORDER BY Name";
                 using (var cmd = new SQLiteCommand(sql, conn))
                 using (var reader = cmd.ExecuteReader())
                 {
-                    var list = new System.Collections.Generic.List<string>();
-                    while (reader.Read())
-                        list.Add(reader.GetString(0));
+                    var list = new List<string>();
+                    while (reader.Read()) list.Add(reader.GetString(0));
                     return list.ToArray();
                 }
             }
@@ -201,7 +178,7 @@ namespace WebUIApp
 
         private string GetMethodSql(string name)
         {
-            using (var conn = new SQLiteConnection($"Data Source={methodsDb}"))
+            using (var conn = new SQLiteConnection($"Data Source={appDb}"))
             {
                 conn.Open();
                 string sql = "SELECT Sql FROM Methods WHERE Name=@name";
@@ -216,8 +193,7 @@ namespace WebUIApp
 
         private async Task SendToJs(string type, object data)
         {
-            var obj = new { Type = type, Data = data };
-            string json = JsonConvert.SerializeObject(obj);
+            string json = JsonConvert.SerializeObject(new { Type = type, Data = data });
             webView.CoreWebView2.PostWebMessageAsJson(json);
         }
     }
