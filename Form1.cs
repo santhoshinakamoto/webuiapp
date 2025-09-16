@@ -13,7 +13,7 @@ namespace WebUIApp
     public partial class Form1 : Form
     {
         private WebView2 webView;
-        private string appDb = "app.db";
+        private string appDb = "appdata.db";
 
         public Form1()
         {
@@ -25,57 +25,73 @@ namespace WebUIApp
         {
             this.Width = 1000;
             this.Height = 700;
+
             webView = new WebView2 { Dock = DockStyle.Fill };
             this.Controls.Add(webView);
+
             await webView.EnsureCoreWebView2Async();
             webView.CoreWebView2.WebMessageReceived += WebView_WebMessageReceived;
+
             string html = File.ReadAllText("ui.html");
             webView.NavigateToString(html);
+
             InitDatabases();
         }
 
         private void InitDatabases()
         {
-            if (!File.Exists(appDb)) SQLiteConnection.CreateFile(appDb);
+            if (!File.Exists(appDb))
+            {
+                SQLiteConnection.CreateFile(appDb);
+            }
             using (var conn = new SQLiteConnection($"Data Source={appDb}"))
             {
                 conn.Open();
-                new SQLiteCommand("CREATE TABLE IF NOT EXISTS Methods (Name TEXT PRIMARY KEY, Sql TEXT)", conn).ExecuteNonQuery();
-                new SQLiteCommand(@"CREATE TABLE IF NOT EXISTS Students (Id INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT, Age INTEGER, Grade TEXT)", conn).ExecuteNonQuery();
-                new SQLiteCommand(@"CREATE TABLE IF NOT EXISTS Schools (Id INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT, Location TEXT)", conn).ExecuteNonQuery();
+                string sql = "CREATE TABLE IF NOT EXISTS Methods (Name TEXT PRIMARY KEY, Sql TEXT)";
+                using (var cmd = new SQLiteCommand(sql, conn))
+                {
+                    cmd.ExecuteNonQuery();
+                }
             }
         }
 
         private async void WebView_WebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
         {
             var msg = JsonConvert.DeserializeObject<AppMessage>(e.WebMessageAsJson);
+
             switch (msg.Type)
             {
                 case "runQuery":
-                    await SendToJs("queryResult", RunQuery(appDb, msg.Sql, msg.Params));
+                    var result = RunQuery(appDb, msg.Sql, msg.Params);
+                    await SendToJs("queryResult", result);
                     break;
+
                 case "saveMethod":
                     await SaveMethod(msg.Name, msg.Sql);
                     break;
+
                 case "listMethods":
                     await SendToJs("methodsList", ListMethods());
                     break;
-                case "getMethodSql":
-                    await SendToJs("methodSql", GetMethodSql(msg.Name));
-                    break;
+
                 case "deleteMethod":
                     DeleteMethod(msg.Name);
                     await SendToJs("methodsList", ListMethods());
                     break;
+
+                case "getMethodSql":
+                    var sql = GetMethodSql(msg.Name);
+                    await SendToJs("methodSql", new { Name = msg.Name, Sql = sql });
+                    break;
             }
         }
 
-        private QueryResult RunQuery(string db, string sql, Dictionary<string, string> parameters = null)
+        private QueryResult RunQuery(string dbPath, string sql, Dictionary<string, string> parameters = null)
         {
             var result = new QueryResult();
             try
             {
-                using (var conn = new SQLiteConnection("Data Source=" + db))
+                using (var conn = new SQLiteConnection("Data Source=" + dbPath))
                 {
                     conn.Open();
                     using (var cmd = new SQLiteCommand(sql, conn))
@@ -89,13 +105,15 @@ namespace WebUIApp
                                 cmd.Parameters.AddWithValue(paramName, paramValue);
                             }
                         }
-                        var firstWord = sql.TrimStart().Split(' ')[0].ToUpperInvariant();
+
+                        string firstWord = sql.TrimStart().Split(' ')[0].ToUpperInvariant();
                         if (firstWord == "SELECT" || firstWord == "PRAGMA")
                         {
                             using (var reader = cmd.ExecuteReader())
                             {
                                 for (int i = 0; i < reader.FieldCount; i++)
                                     result.Columns.Add(new ColumnInfo { ColumnName = reader.GetName(i) });
+
                                 while (reader.Read())
                                 {
                                     var row = new List<object>();
@@ -115,7 +133,11 @@ namespace WebUIApp
                     }
                 }
             }
-            catch (Exception ex) { result.IsError = true; result.Message = ex.Message; }
+            catch (Exception ex)
+            {
+                result.IsError = true;
+                result.Message = ex.Message;
+            }
             return result;
         }
 
@@ -124,6 +146,8 @@ namespace WebUIApp
             using (var conn = new SQLiteConnection($"Data Source={appDb}"))
             {
                 conn.Open();
+
+                // check duplicate
                 string check = "SELECT COUNT(*) FROM Methods WHERE Name=@name";
                 using (var cmd = new SQLiteCommand(check, conn))
                 {
@@ -131,10 +155,11 @@ namespace WebUIApp
                     long count = (long)cmd.ExecuteScalar();
                     if (count > 0)
                     {
-                        await SendToJs("error", $"Method \"{name}\" already exists. Please choose another name.");
+                        await SendToJs("error", "Method already exists. Choose another name.");
                         return;
                     }
                 }
+
                 string insert = "INSERT INTO Methods (Name, Sql) VALUES (@name, @sql)";
                 using (var cmd = new SQLiteCommand(insert, conn))
                 {
@@ -144,6 +169,22 @@ namespace WebUIApp
                 }
             }
             await SendToJs("methodsList", ListMethods());
+        }
+
+        private string[] ListMethods()
+        {
+            var list = new List<string>();
+            using (var conn = new SQLiteConnection($"Data Source={appDb}"))
+            {
+                conn.Open();
+                string sql = "SELECT Name FROM Methods ORDER BY Name";
+                using (var cmd = new SQLiteCommand(sql, conn))
+                using (var reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read()) list.Add(reader.GetString(0));
+                }
+            }
+            return list.ToArray();
         }
 
         private void DeleteMethod(string name)
@@ -156,22 +197,6 @@ namespace WebUIApp
                 {
                     cmd.Parameters.AddWithValue("@name", name);
                     cmd.ExecuteNonQuery();
-                }
-            }
-        }
-
-        private string[] ListMethods()
-        {
-            using (var conn = new SQLiteConnection($"Data Source={appDb}"))
-            {
-                conn.Open();
-                string sql = "SELECT Name FROM Methods ORDER BY Name";
-                using (var cmd = new SQLiteCommand(sql, conn))
-                using (var reader = cmd.ExecuteReader())
-                {
-                    var list = new List<string>();
-                    while (reader.Read()) list.Add(reader.GetString(0));
-                    return list.ToArray();
                 }
             }
         }
@@ -193,7 +218,8 @@ namespace WebUIApp
 
         private async Task SendToJs(string type, object data)
         {
-            string json = JsonConvert.SerializeObject(new { Type = type, Data = data });
+            var obj = new { Type = type, Data = data };
+            string json = JsonConvert.SerializeObject(obj);
             webView.CoreWebView2.PostWebMessageAsJson(json);
         }
     }

@@ -46,7 +46,7 @@
                     background: #005a9e;
                 }
 
-        /* methods dropdown button (caret) */
+        /* methods dropdown */
         .methods-dropdown {
             position: relative;
             display: inline-block;
@@ -74,7 +74,6 @@
             display: inline-block;
         }
 
-        /* dropdown menu */
         .methods-menu {
             position: absolute;
             top: calc(100% + 6px);
@@ -107,10 +106,6 @@
             cursor: pointer;
             flex: 1;
             margin-right: 8px;
-        }
-
-        .methods-actions {
-            white-space: nowrap;
         }
 
         .btn-delete {
@@ -148,15 +143,29 @@
             padding: 10px;
             background: #f9f9f9;
             border-left: 1px solid #ccc;
+            display: flex;
+            flex-direction: column;
         }
 
             #paramPanel h4 {
-                margin-top: 0;
+                margin: 0;
             }
 
-            #paramPanel input {
+        #paramFields {
+            flex: 1;
+            overflow-y: auto;
+            margin-top: 6px;
+        }
+
+            #paramFields label {
+                font-weight: bold;
+                display: block;
+            }
+
+            #paramFields input {
                 width: 100%;
                 margin-bottom: 6px;
+                padding: 4px;
             }
 
         #results {
@@ -225,6 +234,35 @@
             margin-right: 6px;
             vertical-align: middle;
         }
+
+        /* modal */
+        #codeModal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+
+            #codeModal .modal-content {
+                background: white;
+                padding: 15px;
+                border-radius: 6px;
+                width: 500px;
+                max-width: 90%;
+            }
+
+            #codeModal textarea {
+                width: 100%;
+                height: 200px;
+                font-family: Consolas,monospace;
+                font-size: 12px;
+            }
     </style>
 </head>
 <body>
@@ -233,29 +271,36 @@
     <div id="toolbar">
         <button id="runBtn" onclick="runQuery()">▶ Run</button>
         <button onclick="saveMethod()">💾 Save as Method</button>
-
-        <!-- Methods dropdown (caret-style). Click to load methods from backend -->
-        <div class="methods-dropdown" id="methodsDropdown">
-            <button class="methods-btn" id="methodsBtn" onclick="openMethodsMenu(event)">
-                Methods <span class="caret"></span>
-            </button>
-            <div id="methodsMenu" class="methods-menu" style="display:none">
-                <!-- populated dynamically -->
-                <div class="menu-empty">Loading...</div>
-            </div>
+        <div class="methods-dropdown">
+            <button class="methods-btn" id="methodsBtn" onclick="openMethodsMenu(event)">Methods <span class="caret"></span></button>
+            <div id="methodsMenu" class="methods-menu" style="display:none"><div class="menu-empty">Loading...</div></div>
         </div>
     </div>
 
     <div id="mainPanel">
         <div id="editor"></div>
         <div id="paramPanel">
-            <h4>Parameters</h4>
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h4>Parameters</h4>
+                <button id="btnGenCode" onclick="generateCode()" style="background:#5c2d91; color:white; border:none; padding:4px 8px; border-radius:3px; cursor:pointer; font-size:12px;">Get Code</button>
+            </div>
             <div id="paramFields">No parameters detected</div>
         </div>
     </div>
 
     <div id="results"><i>No query executed yet</i></div>
     <div id="statusBar">Ready</div>
+
+    <!-- Modal -->
+    <div id="codeModal">
+        <div class="modal-content">
+            <h3>Generated Code</h3>
+            <textarea id="codeBox"></textarea>
+            <div style="text-align:right; margin-top:10px;">
+                <button onclick="closeModal()" style="padding:6px 12px;">Close</button>
+            </div>
+        </div>
+    </div>
 
     <!-- Monaco Editor -->
     <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.js"></script>
@@ -269,243 +314,115 @@
                 automaticLayout: true,
                 minimap: { enabled: false }
             });
-
             editor.onDidChangeModelContent(updateParamsPanel);
-            updateParamsPanel(); // initial
+            updateParamsPanel();
         });
 
-        // ---------- Parameters panel (kept intact) ----------
+        let currentMethodName = null;
+
         function updateParamsPanel() {
             let sql = editor.getValue();
             let matches = sql.match(/@\w+/g);
             let paramDiv = document.getElementById("paramFields");
             paramDiv.innerHTML = "";
-
-            if (!matches) {
-                paramDiv.innerHTML = "No parameters detected";
-                return;
-            }
-
+            if (!matches) { paramDiv.innerHTML = "No parameters detected"; return; }
             let uniqueParams = [...new Set(matches)];
             uniqueParams.forEach(p => {
-                let container = document.createElement("div");
-                container.style.marginBottom = "6px";
-
                 let label = document.createElement("label");
                 label.textContent = p;
-                label.style.display = "block";
-                label.style.fontWeight = "bold";
-
                 let input = document.createElement("input");
-                input.type = "text";
-                input.dataset.param = p;
-
-                container.appendChild(label);
-                container.appendChild(input);
-                paramDiv.appendChild(container);
+                input.type = "text"; input.dataset.param = p;
+                paramDiv.appendChild(label);
+                paramDiv.appendChild(input);
             });
         }
-
         function getParamValues() {
             let inputs = document.querySelectorAll("#paramFields input");
-            let values = {};
-            inputs.forEach(inp => {
-                values[inp.dataset.param] = inp.value;
-            });
-            return values;
+            let values = {}; inputs.forEach(inp => values[inp.dataset.param] = inp.value); return values;
         }
 
-        // ---------- Query execution UI ----------
         let queryStartTime = null;
         function runQuery() {
             let selection = editor.getModel().getValueInRange(editor.getSelection());
             let sql = (selection && selection.trim() !== "") ? selection : editor.getValue();
             let params = getParamValues();
-
             queryStartTime = performance.now();
-            startProcessing();
-            showExecuting();
-
-            window.chrome.webview.postMessage({
-                Type: "runQuery",
-                Sql: sql,
-                Params: params
-            });
+            startProcessing(); showExecuting();
+            window.chrome.webview.postMessage({ Type: "runQuery", Sql: sql, Params: params });
         }
-        function startProcessing() {
-            let btn = document.getElementById("runBtn");
-            btn.disabled = true;
-            btn.innerHTML = '<span class="spinner"></span> Running...';
-        }
-        function stopProcessing() {
-            let btn = document.getElementById("runBtn");
-            btn.disabled = false;
-            btn.innerHTML = '▶ Run';
-        }
-        function showExecuting() {
-            let div = document.getElementById("results");
-            div.innerHTML = "<i>Executing query...</i>";
-        }
+        function startProcessing() { let btn = document.getElementById("runBtn"); btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Running...'; }
+        function stopProcessing() { let btn = document.getElementById("runBtn"); btn.disabled = false; btn.innerHTML = '▶ Run'; }
+        function showExecuting() { document.getElementById("results").innerHTML = "<i>Executing query...</i>"; }
 
         function showResults(data) {
             stopProcessing();
             let div = document.getElementById("results");
             let elapsed = (performance.now() - queryStartTime).toFixed(1);
-
-            if (data.IsError) {
-                div.innerHTML = `<span style="color:red;">${data.Message}</span>`;
-                setStatus(`Error after ${elapsed} ms`);
-                return;
-            }
-
+            if (data.IsError) { div.innerHTML = `<span style="color:red;">${data.Message}</span>`; setStatus(`Error after ${elapsed} ms`); return; }
             if (data.Rows && data.Rows.length > 0) {
-                let table = "<table><tr>";
-                data.Columns.forEach(c => { table += "<th>" + c.ColumnName + "</th>"; });
-                table += "</tr>";
-                data.Rows.forEach(r => {
-                    table += "<tr>";
-                    r.forEach(val => table += "<td>" + (val ?? "") + "</td>");
-                    table += "</tr>";
-                });
-                table += "</table>";
-                div.innerHTML = table;
-                setStatus(`Completed in ${elapsed} ms, ${data.Rows.length} row(s) returned`);
-            } else {
-                div.innerHTML = `<i>${data.Message}</i>`;
-                setStatus(`Completed in ${elapsed} ms, ${data.RowsAffected} row(s) affected`);
-            }
+                let table = "<table><tr>"; data.Columns.forEach(c => table += "<th>" + c.ColumnName + "</th>"); table += "</tr>";
+                data.Rows.forEach(r => { table += "<tr>"; r.forEach(val => table += "<td>" + (val ?? "") + "</td>"); table += "</tr>"; });
+                table += "</table>"; div.innerHTML = table; setStatus(`Completed in ${elapsed} ms, ${data.Rows.length} row(s) returned`);
+            } else { div.innerHTML = `<i>${data.Message}</i>`; setStatus(`Completed in ${elapsed} ms, ${data.RowsAffected} row(s) affected`); }
         }
 
-        // ---------- Methods dropdown / menu logic ----------
-        const methodsMenu = document.getElementById ? null : null; // no-op to keep linter happy
-
+        /* Methods dropdown */
         function openMethodsMenu(ev) {
             ev.stopPropagation();
             const menu = document.getElementById('methodsMenu');
-            // toggle: if already open -> close
-            if (menu.style.display === 'block') {
-                menu.style.display = 'none';
-                return;
-            }
-            // show loading immediately
-            menu.innerHTML = '<div class="menu-empty">Loading...</div>';
-            menu.style.display = 'block';
-            // request backend to list methods
+            if (menu.style.display === 'block') { menu.style.display = 'none'; return; }
+            menu.innerHTML = '<div class="menu-empty">Loading...</div>'; menu.style.display = 'block';
             window.chrome.webview.postMessage({ Type: 'listMethods' });
         }
-
-        // Populate menu when backend returns list
         function populateMethodsMenu(list) {
-            const menu = document.getElementById('methodsMenu');
-            menu.innerHTML = '';
-            if (!list || list.length === 0) {
-                menu.innerHTML = '<div class="menu-empty">No saved methods</div>';
-                return;
-            }
+            const menu = document.getElementById('methodsMenu'); menu.innerHTML = '';
+            if (!list || list.length === 0) { menu.innerHTML = '<div class="menu-empty">No saved methods</div>'; return; }
             list.forEach(name => {
-                const item = document.createElement('div');
-                item.className = 'methods-item';
-
-                const title = document.createElement('div');
-                title.className = 'methods-name';
-                title.textContent = name;
-                title.title = 'Click to run';
-                title.onclick = () => { runMethod(name); menu.style.display = 'none'; };
-
-                const actions = document.createElement('div');
-                actions.className = 'methods-actions';
-
-                const del = document.createElement('button');
-                del.className = 'btn-delete';
-                del.textContent = 'Delete';
-                del.onclick = (e) => {
-                    e.stopPropagation();
-                    if (confirm('Delete method "' + name + '" ?')) {
-                        window.chrome.webview.postMessage({ Type: 'deleteMethod', Name: name });
-                        // show immediate feedback
-                        menu.innerHTML = '<div class="menu-empty">Deleting...</div>';
-                    }
-                };
-
-                actions.appendChild(del);
-                item.appendChild(title);
-                item.appendChild(actions);
-                menu.appendChild(item);
+                const item = document.createElement('div'); item.className = 'methods-item';
+                const title = document.createElement('div'); title.className = 'methods-name'; title.textContent = name;
+                title.onclick = () => { if (confirm(`Replace editor with method "${name}"?`)) { window.chrome.webview.postMessage({ Type: 'getMethodSql', Name: name }); menu.style.display = 'none'; } };
+                const del = document.createElement('button'); del.className = 'btn-delete'; del.textContent = 'Delete';
+                del.onclick = (e) => { e.stopPropagation(); if (confirm('Delete method "' + name + '"?')) { window.chrome.webview.postMessage({ Type: 'deleteMethod', Name: name }); menu.innerHTML = '<div class="menu-empty">Deleting...</div>'; } };
+                item.appendChild(title); item.appendChild(del); menu.appendChild(item);
             });
         }
+        document.addEventListener('click', function (e) { const menu = document.getElementById('methodsMenu'); if (menu.style.display === 'block') { if (e.target.closest('#methodsMenu') || e.target.closest('#methodsBtn')) return; menu.style.display = 'none'; } });
 
-        // close menu when clicking outside
-        document.addEventListener('click', function (e) {
-            const menu = document.getElementById('methodsMenu');
-            const btn = document.getElementById('methodsBtn');
-            if (!menu) return;
-            if (menu.style.display === 'block') {
-                // if click inside the dropdown or button, ignore
-                if (e.target.closest('#methodsMenu') || e.target.closest('#methodsBtn')) return;
-                menu.style.display = 'none';
+        function saveMethod() { let sql = editor.getValue(); let name = prompt("Enter method name:"); if (name) window.chrome.webview.postMessage({ Type: "saveMethod", Name: name, Sql: sql }); }
+
+        /* Generate code */
+        function generateCode() {
+            let params = getParamValues();
+            let code;
+            if (currentMethodName) {
+                code = `window.chrome.webview.postMessage({
+        Type: "runMethod",
+        Name: "${currentMethodName}",
+        Params: ${JSON.stringify(params, null, 2)}
+});`;
+            } else {
+                let sql = editor.getValue();
+                code = `window.chrome.webview.postMessage({
+        Type: "runQuery",
+        Sql: \`${sql}\`,
+        Params: ${JSON.stringify(params, null, 2)}
+});`;
             }
-        });
-
-        // ---------- Methods helpers ----------
-        function saveMethod() {
-            let sql = editor.getValue();
-            let name = prompt("Enter method name:");
-            if (name) window.chrome.webview.postMessage({ Type: "saveMethod", Name: name, Sql: sql });
+            document.getElementById("codeBox").value = code;
+            document.getElementById("codeModal").style.display = "flex";
         }
+        function closeModal() { document.getElementById("codeModal").style.display = "none"; }
 
-        function runMethod(name) {
-            if (!confirm(`Do you want to replace the query editor with method "${name}"?`)) {
-                return;
-            }
-            // Ask backend for the SQL of this method
-            window.chrome.webview.postMessage({ Type: "getMethodSql", Name: name });
-        }
-
+        /* Bridge */
         window.chrome.webview.addEventListener('message', event => {
-            let msg = event.data;
-            if (!msg || !msg.Type) return;
-
+            let msg = event.data; if (!msg || !msg.Type) return;
             if (msg.Type === "queryResult") showResults(msg.Data);
             if (msg.Type === "methodsList") populateMethodsMenu(msg.Data);
-            if (msg.Type === "askParams") askParams(msg.Data);
-            if (msg.Type === "methodSql") {
-                // Backend returned SQL text → replace editor content
-                if (msg.Data) {
-                    editor.setValue(msg.Data);
-                    updateParamsPanel(); // refresh param form
-                }
-            }
+            if (msg.Type === "methodSql") { if (msg.Data) { editor.setValue(msg.Data.Sql); updateParamsPanel(); currentMethodName = msg.Data.Name; } }
+            if (msg.Type === "error") { alert("⚠️ " + msg.Data); }
         });
 
-        function listMethods() {
-            // refresh the menu contents (open menu if closed)
-            const menu = document.getElementById('methodsMenu');
-            menu.style.display = 'block';
-            menu.innerHTML = '<div class="menu-empty">Loading...</div>';
-            window.chrome.webview.postMessage({ Type: 'listMethods' });
-        }
-
-        // ---------- Messaging bridge ----------
-        window.chrome.webview.addEventListener('message', event => {
-            let msg = event.data;
-            if (!msg || !msg.Type) return;
-
-            if (msg.Type === "queryResult") showResults(msg.Data);
-            if (msg.Type === "methodsList") populateMethodsMenu(msg.Data);
-            if (msg.Type === "askParams") askParams(msg.Data);
-        });
-
-        // ---------- askParams (fallback small prompt version) ----------
-        function askParams(data) {
-            let values = {};
-            data.Params.forEach(p => {
-                let val = prompt("Enter value for " + p);
-                values[p] = val;
-            });
-            window.chrome.webview.postMessage({ Type: "runMethod", Name: data.Name, Params: values });
-        }
-
-        // ---------- Status Bar ----------
+        /* Status bar */
         function setStatus(text) { document.getElementById("statusBar").textContent = text; }
     </script>
 </body>
