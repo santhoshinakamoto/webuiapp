@@ -1,0 +1,221 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>HTML Editor</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Segoe UI, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Toolbar */
+        #toolbar {
+            background: #eee;
+            padding: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid #ccc;
+        }
+
+        #toolbar-left {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        #toolbar button {
+            background: #0078d7;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+
+            #toolbar button:hover {
+                background: #005a9e;
+            }
+
+        .dropdown {
+            position: relative;
+        }
+
+        .dropdown-menu {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            background: #fff;
+            border: 1px solid #ccc;
+            min-width: 200px;
+            max-height: 250px;
+            overflow: auto;
+            z-index: 1000;
+        }
+
+        .dropdown-item {
+            padding: 6px;
+            cursor: pointer;
+        }
+
+            .dropdown-item:hover {
+                background: #f3f3f3;
+            }
+
+        .search-box {
+            width: 95%;
+            margin: 5px;
+            padding: 4px;
+        }
+
+        /* Editor & Preview */
+        #content {
+            flex: 1;
+            display: flex;
+        }
+
+        #editor {
+            flex: 1;
+            border-right: 1px solid #ccc;
+        }
+
+        #preview {
+            flex: 1;
+            background: white;
+        }
+
+            #preview iframe {
+                border: none;
+                width: 100%;
+                height: 100%;
+            }
+
+        /* Footer */
+        #footer {
+            background: #eee;
+            padding: 6px;
+            border-top: 1px solid #ccc;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #titleBox {
+            padding: 4px;
+            width: 200px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Toolbar -->
+    <div id="toolbar">
+        <div id="toolbar-left">
+            <div class="dropdown">
+                <button onclick="toggleDropdown()">Load HTML ▼</button>
+                <div id="pagesMenu" class="dropdown-menu"></div>
+            </div>
+        </div>
+        <button onclick="runPreview()">▶ Run</button>
+    </div>
+
+    <!-- Editor + Preview -->
+    <div id="content">
+        <div id="editor"></div>
+        <div id="preview"><iframe id="previewFrame"></iframe></div>
+    </div>
+
+    <!-- Footer -->
+    <div id="footer">
+        <input id="titleBox" placeholder="Page Title" />
+        <button onclick="savePage()">💾 Save</button>
+    </div>
+
+    <!-- Monaco -->
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.js"></script>
+    <script>
+        let editor;
+        let currentTitle = "";
+        let dirty = false;
+
+        require.config({ paths: { 'vs':'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs'}});
+        require(['vs/editor/editor.main'], function() {
+            editor = monaco.editor.create(document.getElementById('editor'), {
+                value:"<h1>Hello World</h1>",
+                language:"html",
+                theme:"vs-light",
+                automaticLayout:true,
+                minimap:{enabled:false}
+            });
+            editor.onDidChangeModelContent(()=> dirty=true);
+        });
+
+        function runPreview(){
+            document.getElementById("previewFrame").srcdoc = editor.getValue();
+            dirty = false;
+        }
+
+        function savePage(){
+            const title = document.getElementById("titleBox").value.trim();
+            if(!title){ alert("Enter a title"); return; }
+            const html = editor.getValue();
+            window.chrome.webview.postMessage({ Type:"savePage", Name:title, Sql:html });
+            currentTitle = title;
+            dirty = false;
+            alert("Saved");
+        }
+
+        function toggleDropdown(){
+            const menu = document.getElementById("pagesMenu");
+            if(menu.style.display==="block"){ menu.style.display="none"; return; }
+            menu.innerHTML="<input class='search-box' placeholder='Search...' oninput='filterPages(this.value)'/><div>Loading...</div>";
+            menu.style.display="block";
+            window.chrome.webview.postMessage({ Type:"listPages" });
+        }
+
+        function populatePagesMenu(list){
+            const menu = document.getElementById("pagesMenu");
+            menu.innerHTML="<input class='search-box' placeholder='Search...' oninput='filterPages(this.value)'/>";
+            if(!list || list.length===0){ menu.innerHTML+="<div class='dropdown-item'>No pages</div>"; return; }
+            list.forEach(name=>{
+                const item=document.createElement("div");
+                item.className="dropdown-item";
+                item.textContent=name;
+                item.onclick=()=>loadPage(name);
+                menu.appendChild(item);
+            });
+        }
+
+        function filterPages(query){
+            document.querySelectorAll("#pagesMenu .dropdown-item").forEach(el=>{
+                el.style.display=el.textContent.toLowerCase().includes(query.toLowerCase())?"block":"none";
+            });
+        }
+
+        function loadPage(name){
+            if(dirty && !confirm("You have unsaved changes. Continue?")) return;
+            window.chrome.webview.postMessage({ Type:"getPage", Name:name });
+            document.getElementById("pagesMenu").style.display="none";
+        }
+
+        window.chrome.webview.addEventListener('message', event=>{
+            const msg=event.data;
+            if(msg.Type==="pagesList") populatePagesMenu(msg.Data);
+            if(msg.Type==="pageContent"){
+                editor.setValue(msg.Data.Content);
+                document.getElementById("titleBox").value=msg.Data.Title;
+                currentTitle=msg.Data.Title;
+                dirty=false;
+            }
+        });
+
+        document.addEventListener("click", e=>{
+            if(!e.target.closest(".dropdown")) document.getElementById("pagesMenu").style.display="none";
+        });
+    </script>
+</body>
+</html>
